@@ -1,0 +1,127 @@
+import { ref, shallowRef } from 'vue'
+
+import { useCanvasStore } from '@/renderer/core/canvas/canvasStore'
+import { useLitegraphService } from '@/services/litegraphService'
+import type { ComfyNodeDefImpl } from '@/stores/nodeDefStore'
+
+type DragMode = 'click' | 'native'
+
+const isDragging = ref(false)
+const draggedNode = shallowRef<ComfyNodeDefImpl | null>(null)
+const cursorPosition = ref({ x: 0, y: 0 })
+const dragMode = ref<DragMode>('click')
+let listenersSetup = false
+
+function updatePosition(e: PointerEvent) {
+  cursorPosition.value = { x: e.clientX, y: e.clientY }
+}
+
+function cancelDrag() {
+  isDragging.value = false
+  draggedNode.value = null
+  dragMode.value = 'click'
+}
+
+function isOverCanvas(clientX: number, clientY: number): boolean {
+  const canvasElement = useCanvasStore().canvas?.canvas as
+    | HTMLCanvasElement
+    | undefined
+  if (!canvasElement) return false
+  const rect = canvasElement.getBoundingClientRect()
+  return (
+    clientX >= rect.left &&
+    clientX <= rect.right &&
+    clientY >= rect.top &&
+    clientY <= rect.bottom
+  )
+}
+
+function addNodeAtPosition(clientX: number, clientY: number): boolean {
+  if (!draggedNode.value) return false
+  const canvas = useCanvasStore().canvas
+  if (!canvas) return false
+  if (!isOverCanvas(clientX, clientY)) return false
+
+  const pos = canvas.convertEventToCanvasOffset({
+    clientX,
+    clientY
+  } as PointerEvent)
+  const node = useLitegraphService().addNodeOnGraph(draggedNode.value, { pos })
+  if (node) canvas.selectItems([node])
+  return true
+}
+
+function endDrag(e: PointerEvent) {
+  if (!isDragging.value || !draggedNode.value) return
+  if (dragMode.value !== 'click') return
+
+  try {
+    addNodeAtPosition(e.clientX, e.clientY)
+  } finally {
+    cancelDrag()
+  }
+}
+
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') cancelDrag()
+}
+
+// Prevent LiteGraph's empty-canvas hit-test from deselecting the placed node on pointerup.
+function blockCommitPointerDown(e: PointerEvent) {
+  if (!isDragging.value || dragMode.value !== 'click') return
+  if (!isOverCanvas(e.clientX, e.clientY)) return
+  e.stopImmediatePropagation()
+}
+
+function setupGlobalListeners() {
+  if (listenersSetup) return
+  listenersSetup = true
+
+  document.addEventListener('pointermove', updatePosition)
+  document.addEventListener('pointerdown', blockCommitPointerDown, true)
+  document.addEventListener('pointerup', endDrag, true)
+  document.addEventListener('keydown', handleKeydown)
+}
+
+function cleanupGlobalListeners() {
+  if (!listenersSetup) return
+  listenersSetup = false
+
+  document.removeEventListener('pointermove', updatePosition)
+  document.removeEventListener('pointerdown', blockCommitPointerDown, true)
+  document.removeEventListener('pointerup', endDrag, true)
+  document.removeEventListener('keydown', handleKeydown)
+
+  if (isDragging.value && dragMode.value === 'click') {
+    cancelDrag()
+  }
+}
+
+export function useNodeDragToCanvas() {
+  function startDrag(nodeDef: ComfyNodeDefImpl, mode: DragMode = 'click') {
+    isDragging.value = true
+    draggedNode.value = nodeDef
+    dragMode.value = mode
+  }
+
+  function handleNativeDrop(clientX: number, clientY: number) {
+    if (dragMode.value !== 'native') return
+    try {
+      addNodeAtPosition(clientX, clientY)
+    } finally {
+      cancelDrag()
+    }
+  }
+
+  return {
+    isDragging,
+    draggedNode,
+    cursorPosition,
+    dragMode,
+    startDrag,
+    cancelDrag,
+    handleNativeDrop,
+    setupGlobalListeners,
+    cleanupGlobalListeners
+  }
+}
